@@ -1,5 +1,10 @@
 on:
   workflow_call:
+    inputs:
+      baseBranch:
+        description: "The base branch to compare against. Example: 'main'"
+        default: main
+        type: string
     outputs:
       version:
         description: "Generated semantic version"
@@ -27,6 +32,7 @@ jobs:
         uses: codacy/git-version@2.8.0
         with:
           minor-identifier: /^feat/
+          release-branch: ${{ inputs.baseBranch }}
 
       - name: Print the version
         run: |
