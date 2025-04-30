@@ -1,0 +1,56 @@
+on:
+  workflow_call:
+    inputs:
+      deploymentRepo:
+        description: "The name of the deployment repository. Example: 'test-env-deploy'"
+        required: true
+        type: string
+      serviceName:
+        description: "The name of the service in docker-compose to update. Example: 'des'"
+        required: true
+        type: string
+      imageRegistry:
+        description: "The docker registry with necessary images. Example: 'registry.digitalocean.com/oipub-des-registry'"
+        required: true
+        type: string
+      imageName:
+        description: "The name of the image to update in docker-compose. Example: 'oipub-api'"
+        required: true
+        type: string
+      imageTag:
+        description: "The tag of the image to update in docker-compose. Example: '0.23.7'"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    name: Update Deployment
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Repository
+        uses: actions/checkout@v3
+
+      - name: Clone Deploy Repository
+        run: |
+          git clone https://ivan-baha-88:${{ secrets.DEV_DEPLOY_PAT }}@github.com/oipub/${{inputs.deploymentRepo}}.git
+
+      - name: Set up Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Update Docker Compose File
+        run: |
+          cd ${{inputs.deploymentRepo}}
+          sed -i 's|image: ${{inputs.imageRegistry}}/${{inputs.imageName}}:.*|image: ${{inputs.imageRegistry}}/${{inputs.imageName}}:${{ inputs.imageTag }}|' docker-compose.yml
+
+      - name: Commit and Push Changes
+        run: |
+          cd ${{inputs.deploymentRepo}}
+          git add .
+          git commit -m "${{inputs.serviceName}}: Updated the Docker image version to ${{ inputs.imageTag }}"
+          git push https://ivan-baha-88:${{ secrets.DEV_DEPLOY_PAT }}@github.com/oipub/${{inputs.deploymentRepo}}.git main
