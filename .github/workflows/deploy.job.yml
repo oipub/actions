@@ -40,7 +40,7 @@ jobs:
 
       - name: Clone Deploy Repository
         run: |
-          git clone https://ivan-baha-88:${{ secrets.DEV_DEPLOY_PAT }}@github.com/oipub/${{inputs.deploymentRepo}}.git
+          git clone https://ivan-baha-88:${{ secrets.GITHUB_PAT }}@github.com/oipub/${{inputs.deploymentRepo}}.git
 
       - name: Set up Git
         run: |
