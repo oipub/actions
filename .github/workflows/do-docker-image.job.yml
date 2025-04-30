@@ -13,6 +13,10 @@ on:
         description: "The tag of the image to update in docker-compose. Example: '0.23.7'"
         required: true
         type: string
+    secrets:
+      DO_PAT:
+        description: "DigitalOcean Personal Access Token"
+        required: true
 
 permissions:
   contents: write
