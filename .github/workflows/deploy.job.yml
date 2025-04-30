@@ -57,4 +57,4 @@ jobs:
           cd ${{inputs.deploymentRepo}}
           git add .
           git commit -m "${{inputs.serviceName}}: Updated the Docker image version to ${{ inputs.imageTag }}"
-          git push https://ivan-baha-88:${{ secrets.DEV_DEPLOY_PAT }}@github.com/oipub/${{inputs.deploymentRepo}}.git main
+          git push https://ivan-baha-88:${{ secrets.GITHUB_PAT }}@github.com/oipub/${{inputs.deploymentRepo}}.git main
