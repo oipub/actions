@@ -1,4 +1,10 @@
-on: workflow_call
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: "Generated semantic version"
+        value: ${{ jobs.git-version.outputs.version }}
+
 permissions:
   contents: write
 
