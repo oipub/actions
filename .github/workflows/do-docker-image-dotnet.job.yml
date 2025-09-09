@@ -1,0 +1,75 @@
+on:
+  workflow_call:
+    inputs:
+      imageRegistry:
+        description: "The docker registry with necessary images. Example: 'registry.digitalocean.com/oipub-des-registry'"
+        required: true
+        type: string
+      imageName:
+        description: "The name of the image to update in docker-compose. Example: 'oipub-api'"
+        required: true
+        type: string
+      imageTag:
+        description: "The tag of the image to update in docker-compose. Example: '0.23.7'"
+        required: true
+        type: string
+    secrets:
+      DO_PAT:
+        description: "DigitalOcean Personal Access Token"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  dotnet-version:
+    name: Dotnet version bump
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Update AppVersion.cs
+        run: |
+          sed -i 's|public const string Version = ".*";|public const string Version = "${{ inputs.imageTag }}";|' src/OpenSearchService.Domain/Configuration/AppVersion.cs
+
+  build:
+    name: DigitalOcean Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to DO Container Registry
+        run: echo "${{ secrets.DO_PAT }}" | docker login registry.digitalocean.com -u doctl --password-stdin
+
+      - name: Build and Push Image
+        id: docker_build
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ${{ inputs.imageRegistry }}/${{ inputs.imageName }}:${{ inputs.imageTag }}
+
+      - name: Image digest
+        run: echo ${{ steps.docker_build.outputs.digest }}
+
+  store-version:
+    name: Store version
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Commit and push updated AppVersion.cs
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add src/OpenSearchService.Domain/Configuration/AppVersion.cs
+          git commit -m "ci: update app version to ${{ inputs.imageTag }} [skip ci]" || echo "No changes to commit"
+          git push
