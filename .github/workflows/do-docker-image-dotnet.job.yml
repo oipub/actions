@@ -25,7 +25,6 @@ jobs:
   build:
     name: DigitalOcean Docker Image
     runs-on: ubuntu-latest
-    needs: dotnet-version
 
     steps:
       - name: Checkout repository
