@@ -22,18 +22,10 @@ permissions:
   contents: write
 
 jobs:
-  dotnet-version:
-    name: Dotnet version bump
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Update AppVersion.cs
-        run: |
-          sed -i 's|public const string Version = ".*";|public const string Version = "${{ inputs.imageTag }}";|' src/OpenSearchService.Domain/Configuration/AppVersion.cs
-
   build:
     name: DigitalOcean Docker Image
     runs-on: ubuntu-latest
+    needs: dotnet-version
 
     steps:
       - name: Checkout repository
@@ -41,6 +33,11 @@ jobs:
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
+
+      - name: Update AppVersion.cs
+        run: |
+          sed -i 's|public const string Version = ".*";|public const string Version = "${{ inputs.imageTag }}";|' src/OpenSearchService.Domain/Configuration/AppVersion.cs
+          cat src/OpenSearchService.Domain/Configuration/AppVersion.cs
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -61,11 +58,6 @@ jobs:
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
 
-  store-version:
-    name: Store version
-    runs-on: ubuntu-latest
-
-    steps:
       - name: Commit and push updated AppVersion.cs
         run: |
           git config --global user.name "github-actions[bot]"
