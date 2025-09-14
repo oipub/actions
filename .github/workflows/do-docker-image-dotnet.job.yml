@@ -21,7 +21,7 @@ on:
       DO_PAT:
         description: "DigitalOcean Personal Access Token"
         required: true
-      GITHUB_TOKEN:
+      GITHUB_PAT:
         description: "GitHub token for accessing GitHub Packages"
         required: false
 
@@ -70,7 +70,7 @@ jobs:
           tags: ${{ inputs.imageRegistry }}/${{ inputs.imageName }}:${{ inputs.imageTag }}
           build-args: |
             GITHUB_USERNAME=${{ inputs.githubUsername }}
-            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+            GITHUB_PAT=${{ secrets.GITHUB_PAT }}
 
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
