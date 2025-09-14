@@ -13,10 +13,17 @@ on:
         description: "The tag of the image to update in docker-compose. Example: '0.23.7'"
         required: true
         type: string
+      githubUsername:
+        description: "GitHub username for package authentication"
+        required: false
+        type: string
     secrets:
       DO_PAT:
         description: "DigitalOcean Personal Access Token"
         required: true
+      GITHUB_PAT:
+        description: "GitHub Personal Access Token for package authentication"
+        required: false
 
 permissions:
   contents: write
@@ -61,6 +68,9 @@ jobs:
         with:
           push: true
           tags: ${{ inputs.imageRegistry }}/${{ inputs.imageName }}:${{ inputs.imageTag }}
+          build-args: |
+            GITHUB_USERNAME=${{ inputs.githubUsername }}
+            GITHUB_TOKEN=${{ secrets.GITHUB_PAT }}
 
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
