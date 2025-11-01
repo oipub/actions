@@ -19,13 +19,20 @@ jobs:
 
       - name: Update AppVersion.cs
         run: |
-          sed -i 's|public const string Version = ".*";|public const string Version = "${{ inputs.version }}";|' src/OpenSearchService.Domain/Configuration/AppVersion.cs
-          cat src/OpenSearchService.Domain/Configuration/AppVersion.cs
+          APP_VERSION_FILE=$(find . -path "*/Configuration/AppVersion.cs" | head -n 1)
+          if [ -z "$APP_VERSION_FILE" ]; then
+            echo "AppVersion.cs not found in any Configuration directory"
+            exit 1
+          fi
+          echo "Found AppVersion.cs at: $APP_VERSION_FILE"
+          sed -i 's|public const string Version = ".*";|public const string Version = "${{ inputs.version }}";|' "$APP_VERSION_FILE"
+          cat "$APP_VERSION_FILE"
 
       - name: Commit and push updated AppVersion.cs
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add src/OpenSearchService.Domain/Configuration/AppVersion.cs
+          APP_VERSION_FILE=$(find . -path "*/Configuration/AppVersion.cs" | head -n 1)
+          git add "$APP_VERSION_FILE"
           git commit -m "ci: update app version to ${{ inputs.version }} [skip ci]" || echo "No changes to commit"
           git push
