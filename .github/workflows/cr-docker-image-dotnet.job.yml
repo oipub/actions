@@ -1,0 +1,85 @@
+# Docker Image Build and Push for .NET Application
+# Registry: container-registry.oipub.com (self-hosted)
+
+on:
+  workflow_call:
+    inputs:
+      imageName:
+        description: "CR repo name (image name). Example: 'oipub-backend'"
+        required: true
+        type: string
+      imageTag:
+        description: "The image tag (version). Example: '0.23.7'"
+        required: true
+        type: string
+      githubUsername:
+        description: "GitHub username for package authentication"
+        required: false
+        type: string
+    secrets:
+      CR_USERNAME:
+        description: "Container Registry Username for login"
+        required: true
+      CR_PASSWORD:
+        description: "Container Registry Password for login"
+        required: true
+      GITHUB_PAT:
+        description: "GitHub Personal Access Token for package authentication"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Publish Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Update AppVersion.cs
+        run: |
+          APP_VERSION_FILE=$(find . -path "*/Configuration/AppVersion.cs" | head -n 1)
+          if [ -z "$APP_VERSION_FILE" ]; then
+            echo "AppVersion.cs not found in any Configuration directory"
+            exit 1
+          fi
+          echo "Found AppVersion.cs at: $APP_VERSION_FILE"
+          sed -i 's|public const string Version = ".*";|public const string Version = "${{ inputs.imageTag }}";|' "$APP_VERSION_FILE"
+          cat "$APP_VERSION_FILE"
+
+      - name: Commit and push updated AppVersion.cs
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          APP_VERSION_FILE=$(find . -path "*/Configuration/AppVersion.cs" | head -n 1)
+          git add "$APP_VERSION_FILE"
+          git commit -m "ci: update app version to ${{ inputs.imageTag }} [skip ci]" || echo "No changes to commit"
+          git push
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        run: echo "${{ secrets.CR_PASSWORD }}" | docker login container-registry.oipub.com -u ${{ secrets.CR_USERNAME }} --password-stdin
+
+      - name: Build and Push Image
+        id: docker_build
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: container-registry.oipub.com/${{ inputs.imageName }}:${{ inputs.imageTag }}
+          build-args: |
+            GITHUB_USERNAME=${{ inputs.githubUsername }}
+            GITHUB_TOKEN=${{ secrets.GITHUB_PAT }}
+
+      - name: Image digest
+        run: echo ${{ steps.docker_build.outputs.digest }}
