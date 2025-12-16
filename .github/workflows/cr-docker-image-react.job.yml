@@ -1,0 +1,55 @@
+# Docker Image Build and Push for React Application
+# Registry: container-registry.oipub.com (self-hosted)
+
+on:
+  workflow_call:
+    inputs:
+      imageName:
+        description: "CR repo name (image name). Example: 'oipub-frontend'"
+        required: true
+        type: string
+      imageTag:
+        description: "The image tag (version). Example: '0.23.7'"
+        required: true
+        type: string
+    secrets:
+      CR_USERNAME:
+        description: "Container Registry Username for login"
+        required: true
+      CR_PASSWORD:
+        description: "Container Registry Password for login"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Publish Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        run: echo "${{ secrets.CR_PASSWORD }}" | docker login container-registry.oipub.com -u ${{ secrets.CR_USERNAME }} --password-stdin
+
+      - name: Build and Push Image
+        id: docker_build
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: container-registry.oipub.com/${{ inputs.imageName }}:${{ inputs.imageTag }}
+
+      - name: Image digest
+        run: echo ${{ steps.docker_build.outputs.digest }}
