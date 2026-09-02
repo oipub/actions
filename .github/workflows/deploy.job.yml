@@ -1,60 +1,169 @@
+# Point a deployment repo's docker-compose file at a newly published image.
+#
+# Pushing to the deployment repo is what actually triggers a deploy, so the
+# commit subject must stay `<serviceName>: ...` - the deployment repo parses it
+# to decide which deploy-*.sh to run on the VM.
+name: Update Deployment Repo
+
 on:
   workflow_call:
     inputs:
       deploymentRepo:
-        description: "The name of the deployment repository. Example: 'test-env-deploy'"
+        description: "Name of the deployment repository. Example: 'test-env-deploy'"
         required: true
         type: string
       serviceName:
-        description: "The name of the service in docker-compose to update. Example: 'des'"
-        required: true
-        type: string
-      imageRegistry:
-        description: "The docker registry with necessary images. Example: 'registry.digitalocean.com/oipub-des-registry'"
+        description: "docker-compose service name; also the commit subject prefix the deploy repo dispatches on. Example: 'des'"
         required: true
         type: string
       imageName:
-        description: "The name of the image to update in docker-compose. Example: 'oipub-api'"
+        description: "Image name to update in docker-compose. Example: 'web-backend'"
         required: true
         type: string
       imageTag:
-        description: "The tag of the image to update in docker-compose. Example: '0.23.7'"
+        description: "Image tag to pin. Example: '0.23.7'"
         required: true
         type: string
+      imageRegistry:
+        description: "Registry to write into the compose file. Callers pass `${{ vars.CR_REGISTRY }}`; deliberately not defaulted, since the host is environment configuration rather than code."
+        required: true
+        type: string
+      deploymentOwner:
+        description: "GitHub owner of the deployment repository."
+        required: false
+        type: string
+        default: oipub
+      composeFile:
+        description: "Compose file to update, relative to the deployment repo root."
+        required: false
+        type: string
+        default: docker-compose.yml
+      runsOn:
+        description: "Runner label."
+        required: false
+        type: string
+        default: ubuntu-24.04
     secrets:
       GITHUB_PAT:
-        description: "GitHub Personal Access Token to push changes to the deployment repository"
+        description: "PAT with push access to the deployment repository"
         required: true
 
-permissions:
-  contents: write
+# Everything here happens in the deployment repo over a PAT; the run's own
+# GITHUB_TOKEN is not used at all.
+permissions: {}
 
 jobs:
   deploy:
     name: Update Deployment
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runsOn }}
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout Source Repository
-        uses: actions/checkout@v3
-
-      - name: Clone Deploy Repository
+      # Fail before touching the deployment repo if the registry variable is
+      # unset: an unset `vars.*` resolves to an empty string, which GitHub still
+      # accepts as a "provided" required input.
+      - name: Check registry is configured
+        env:
+          REGISTRY: ${{ inputs.imageRegistry }}
         run: |
-          git clone https://ivan-baha-88:${{ secrets.GITHUB_PAT }}@github.com/oipub/${{inputs.deploymentRepo}}.git
+          if [ -z "$REGISTRY" ]; then
+            echo "::error::No container registry configured. Set the CR_REGISTRY variable at the organization or repository level; the caller passes it as vars.CR_REGISTRY."
+            exit 1
+          fi
+          echo "Registry: $REGISTRY"
 
-      - name: Set up Git
+      # No checkout of the calling repo: this job only ever touches the
+      # deployment repo, which it clones itself.
+      - name: Clone deployment repository
+        env:
+          GH_PAT: ${{ secrets.GITHUB_PAT }}
+          OWNER: ${{ inputs.deploymentOwner }}
+          REPO: ${{ inputs.deploymentRepo }}
         run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          set -euo pipefail
+          git clone "https://x-access-token:${GH_PAT}@github.com/${OWNER}/${REPO}.git" deployment
+          git -C deployment config user.name  "github-actions[bot]"
+          git -C deployment config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Update Docker Compose File
+      - name: Pin image tag in compose file
+        working-directory: deployment
+        env:
+          COMPOSE_FILE: ${{ inputs.composeFile }}
+          DEPLOY_REPO: ${{ inputs.deploymentRepo }}
+          REGISTRY: ${{ inputs.imageRegistry }}
+          IMAGE_NAME: ${{ inputs.imageName }}
+          IMAGE_TAG: ${{ inputs.imageTag }}
         run: |
-          cd ${{inputs.deploymentRepo}}
-          sed -i 's|image: ${{inputs.imageRegistry}}/${{inputs.imageName}}:.*|image: ${{inputs.imageRegistry}}/${{inputs.imageName}}:${{ inputs.imageTag }}|' docker-compose.yml
+          set -euo pipefail
 
-      - name: Commit and Push Changes
+          COMPOSE="$COMPOSE_FILE"
+          if [ ! -f "$COMPOSE" ]; then
+            for candidate in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do
+              if [ -f "$candidate" ]; then COMPOSE="$candidate"; break; fi
+            done
+          fi
+          if [ ! -f "$COMPOSE" ]; then
+            echo "::error::No compose file found in ${DEPLOY_REPO}"
+            exit 1
+          fi
+          echo "Updating ${COMPOSE}"
+
+          # Match on the image name rather than the registry host, so a registry
+          # migration rewrites the line instead of silently matching nothing.
+          sed -i -E \
+            "s#^([[:space:]]*image:[[:space:]]*)[^[:space:]]*/${IMAGE_NAME}:[^[:space:]]*#\1${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}#" \
+            "$COMPOSE"
+
+          if ! grep -qF "image: ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" "$COMPOSE"; then
+            echo "::error::No image line for '${IMAGE_NAME}' was updated in ${COMPOSE}."
+            echo "Image lines currently present:"
+            grep -n "image:" "$COMPOSE" || true
+            exit 1
+          fi
+
+          git --no-pager diff -- "$COMPOSE"
+
+      - name: Commit and push
+        working-directory: deployment
+        env:
+          GH_PAT: ${{ secrets.GITHUB_PAT }}
+          OWNER: ${{ inputs.deploymentOwner }}
+          REPO: ${{ inputs.deploymentRepo }}
+          SERVICE_NAME: ${{ inputs.serviceName }}
+          IMAGE_TAG: ${{ inputs.imageTag }}
         run: |
-          cd ${{inputs.deploymentRepo}}
-          git add .
-          git commit -m "${{inputs.serviceName}}: Updated the Docker image version to ${{ inputs.imageTag }}"
-          git push https://ivan-baha-88:${{ secrets.GITHUB_PAT }}@github.com/oipub/${{inputs.deploymentRepo}}.git main
+          set -euo pipefail
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "${SERVICE_NAME} is already pinned to ${IMAGE_TAG}; nothing to deploy."
+            echo "SKIPPED=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          git commit -m "${SERVICE_NAME}: Updated the Docker image version to ${IMAGE_TAG}"
+
+          # Several services finish building at once and all push here. Rebase
+          # and retry rather than losing a deploy to a rejected push.
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:${BRANCH}"; then
+              exit 0
+            fi
+            echo "Push rejected (attempt ${attempt}); rebasing onto origin/${BRANCH}"
+            sleep $(( attempt * 3 ))
+            git pull --rebase origin "${BRANCH}"
+          done
+          echo "::error::Could not push the deployment update after 5 attempts"
+          exit 1
+
+      - name: Summary
+        env:
+          SERVICE_NAME: ${{ inputs.serviceName }}
+          REPO: ${{ inputs.deploymentRepo }}
+          IMAGE: ${{ inputs.imageRegistry }}/${{ inputs.imageName }}:${{ inputs.imageTag }}
+        run: |
+          if [ "${SKIPPED:-false}" = "true" ]; then
+            echo "### ${SERVICE_NAME}: already at \`${IMAGE}\` - no deploy triggered" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ${SERVICE_NAME} -> \`${IMAGE}\` in \`${REPO}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi

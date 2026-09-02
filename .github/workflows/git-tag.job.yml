@@ -1,9 +1,18 @@
+# Tag the commit that was built, unless the tag already exists.
+name: Git Tag
+
 on:
   workflow_call:
     inputs:
       version:
+        description: "Tag to create. Example: '0.23.7'"
         required: true
         type: string
+      runsOn:
+        description: "Runner label."
+        required: false
+        type: string
+        default: ubuntu-24.04
 
 permissions:
   contents: write
@@ -11,23 +20,29 @@ permissions:
 jobs:
   git-tag:
     name: Git Tag
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runsOn }}
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
+          fetch-tags: true
 
-      - name: Create Git Tag
+      - name: Create git tag
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          git fetch --tags
-          if git rev-parse "refs/tags/${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "Tag ${{ inputs.version }} already exists. Skipping..."
-          else
-            git config --global user.name "github-actions[bot]"
-            git config --global user.email "github-actions[bot]@users.noreply.github.com"
-            git tag ${{ inputs.version }}
-            git push origin ${{ inputs.version }}
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "Tag ${VERSION} already exists. Skipping."
+            echo "### Tag \`${VERSION}\` already existed" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${VERSION}"
+          git push origin "refs/tags/${VERSION}"
+          echo "### Tagged \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"

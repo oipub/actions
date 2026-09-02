@@ -1,85 +1,169 @@
-# Docker Image Build and Push for .NET Application
-# Registry: container-registry.oipub.com (self-hosted)
+# Build a .NET service image and push it to the OiPub container registry.
+#
+# The registry host is not hardcoded anywhere in this repository. Callers pass
+# it from the `CR_REGISTRY` configuration variable, so moving registries means
+# changing one organization variable rather than editing any workflow.
+name: CR Docker Image (.NET)
 
 on:
   workflow_call:
     inputs:
       imageName:
-        description: "CR repo name (image name). Example: 'oipub-backend'"
+        description: "CR repo name (image name). Example: 'auth-service'"
         required: true
         type: string
       imageTag:
         description: "The image tag (version). Example: '0.23.7'"
         required: true
         type: string
+      registry:
+        description: "Container registry host. Callers pass `${{ vars.CR_REGISTRY }}`; deliberately not defaulted, since the host is environment configuration rather than code."
+        required: true
+        type: string
       githubUsername:
-        description: "GitHub username for package authentication"
+        description: "GitHub username used to restore private NuGet packages during the build"
         required: false
         type: string
+      context:
+        description: "Docker build context."
+        required: false
+        type: string
+        default: "."
+      dockerfile:
+        description: "Path to the Dockerfile, relative to the build context."
+        required: false
+        type: string
+        default: Dockerfile
+      runsOn:
+        description: "Runner label."
+        required: false
+        type: string
+        default: ubuntu-24.04
     secrets:
       CR_USERNAME:
-        description: "Container Registry Username for login"
+        description: "Container Registry username"
         required: true
       CR_PASSWORD:
-        description: "Container Registry Password for login"
+        description: "Container Registry password"
         required: true
       GITHUB_PAT:
-        description: "GitHub Personal Access Token for package authentication"
+        description: "GitHub PAT used to restore private NuGet packages during the build"
         required: false
+    outputs:
+      image:
+        description: "Fully qualified image reference that was pushed"
+        value: ${{ jobs.build.outputs.image }}
+      digest:
+        description: "Digest of the pushed image"
+        value: ${{ jobs.build.outputs.digest }}
 
+# Needed by the AppVersion.cs stamp commit below. Nothing else here writes.
 permissions:
   contents: write
 
 jobs:
   build:
     name: Publish Docker Image
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runsOn }}
+    timeout-minutes: 30
+    outputs:
+      image: ${{ inputs.registry }}/${{ inputs.imageName }}:${{ inputs.imageTag }}
+      digest: ${{ steps.docker_build.outputs.digest }}
 
     steps:
+      # Fail before anything is built or committed if the registry variable is
+      # unset: an unset `vars.*` resolves to an empty string, which GitHub still
+      # accepts as a "provided" required input.
+      - name: Check registry is configured
+        env:
+          REGISTRY: ${{ inputs.registry }}
+        run: |
+          if [ -z "$REGISTRY" ]; then
+            echo "::error::No container registry configured. Set the CR_REGISTRY variable at the organization or repository level; the caller passes it as vars.CR_REGISTRY."
+            exit 1
+          fi
+          echo "Registry: $REGISTRY"
+
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
 
-      - name: Update AppVersion.cs
+      - name: Stamp AppVersion.cs
+        env:
+          IMAGE_TAG: ${{ inputs.imageTag }}
         run: |
+          set -euo pipefail
           APP_VERSION_FILE=$(find . -path "*/Configuration/AppVersion.cs" | head -n 1)
           if [ -z "$APP_VERSION_FILE" ]; then
-            echo "AppVersion.cs not found in any Configuration directory"
+            echo "::error::AppVersion.cs not found in any Configuration directory"
             exit 1
           fi
           echo "Found AppVersion.cs at: $APP_VERSION_FILE"
-          sed -i 's|public const string Version = ".*";|public const string Version = "${{ inputs.imageTag }}";|' "$APP_VERSION_FILE"
+          sed -i "s|public const string Version = \".*\";|public const string Version = \"${IMAGE_TAG}\";|" "$APP_VERSION_FILE"
           cat "$APP_VERSION_FILE"
+          echo "APP_VERSION_FILE=$APP_VERSION_FILE" >> "$GITHUB_ENV"
 
-      - name: Commit and push updated AppVersion.cs
+      - name: Commit and push AppVersion.cs
+        env:
+          IMAGE_TAG: ${{ inputs.imageTag }}
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          APP_VERSION_FILE=$(find . -path "*/Configuration/AppVersion.cs" | head -n 1)
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$APP_VERSION_FILE"
-          git commit -m "ci: update app version to ${{ inputs.imageTag }} [skip ci]" || echo "No changes to commit"
-          git push
+          if git diff --cached --quiet; then
+            echo "AppVersion.cs is already at ${IMAGE_TAG} - nothing to commit."
+            exit 0
+          fi
+          git commit -m "ci: update app version to ${IMAGE_TAG} [skip ci]"
+          # Another run can land on the branch between our checkout and our push.
+          # Rebase and retry rather than failing a build that is otherwise fine.
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "Push rejected (attempt ${attempt}); rebasing onto origin/${GITHUB_REF_NAME}"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          done
+          echo "::error::Could not push the AppVersion.cs bump after 3 attempts"
+          exit 1
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
+      # No QEMU setup: these images are single-platform (linux/amd64) and the
+      # runner is already amd64, so emulation was pure overhead.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
-      - name: Log in to Container Registry
-        run: echo "${{ secrets.CR_PASSWORD }}" | docker login container-registry.oipub.com -u ${{ secrets.CR_USERNAME }} --password-stdin
-
-      - name: Build and Push Image
-        id: docker_build
-        uses: docker/build-push-action@v6
+      - name: Log in to the container registry
+        uses: docker/login-action@v4
         with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.CR_USERNAME }}
+          password: ${{ secrets.CR_PASSWORD }}
+
+      - name: Build and push image
+        id: docker_build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
           push: true
-          tags: container-registry.oipub.com/${{ inputs.imageName }}:${{ inputs.imageTag }}
+          tags: ${{ inputs.registry }}/${{ inputs.imageName }}:${{ inputs.imageTag }}
           build-args: |
             GITHUB_USERNAME=${{ inputs.githubUsername }}
             GITHUB_TOKEN=${{ secrets.GITHUB_PAT }}
+          # Layer cache keyed per image so services do not evict each other.
+          cache-from: type=gha,scope=${{ inputs.imageName }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.imageName }}
 
-      - name: Image digest
-        run: echo ${{ steps.docker_build.outputs.digest }}
+      - name: Summary
+        env:
+          IMAGE: ${{ inputs.registry }}/${{ inputs.imageName }}:${{ inputs.imageTag }}
+          DIGEST: ${{ steps.docker_build.outputs.digest }}
+        run: |
+          {
+            echo "### Pushed \`${IMAGE}\`"
+            echo
+            echo "Digest: \`${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,39 +1,54 @@
+# Derive the next semantic version from git history (conventional commits).
+name: Git Version
+
 on:
   workflow_call:
     inputs:
       baseBranch:
-        description: "The base branch to compare against. Example: 'main'"
+        description: "Release branch to compare against. Example: 'main'"
+        required: false
         default: main
         type: string
+      runsOn:
+        description: "Runner label."
+        required: false
+        type: string
+        default: ubuntu-24.04
     outputs:
       version:
         description: "Generated semantic version"
         value: ${{ jobs.git-version.outputs.version }}
 
+# Read-only: this job derives a version, it does not tag or commit.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   git-version:
     name: Git Version
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runsOn }}
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
+          # Full history and tags: the version is derived from both.
           fetch-depth: 0
 
       - name: Version
         id: version
-        uses: codacy/git-version@2.8.0
+        uses: codacy/git-version@2.8.7
         with:
           minor-identifier: /^feat/
           release-branch: ${{ inputs.baseBranch }}
 
       - name: Print the version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          echo ${{ steps.version.outputs.version }}
+          echo "Version: ${VERSION}"
+          echo "### Version \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"

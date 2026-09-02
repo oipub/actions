@@ -1,9 +1,23 @@
+# Write the released version back into package.json.
+name: NPM Version
+
 on:
   workflow_call:
     inputs:
       version:
+        description: "Version to write into package.json. Example: '0.67.6'"
         required: true
         type: string
+      nodeVersion:
+        description: "Node.js version used to run `npm version`."
+        required: false
+        type: string
+        default: "22"
+      runsOn:
+        description: "Runner label."
+        required: false
+        type: string
+        default: ubuntu-24.04
 
 permissions:
   contents: write
@@ -11,28 +25,49 @@ permissions:
 jobs:
   npm-version:
     name: NPM Version
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runsOn }}
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: ${{ inputs.nodeVersion }}
 
       - name: Update version in package.json
-        run: |
-          npm version ${{ inputs.version }} --no-git-tag-version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: npm version "${VERSION}" --no-git-tag-version --allow-same-version
 
-      - name: Commit and Push
+      - name: Commit and push
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json
-          git commit -m "Bumped version to ${{ inputs.version }} [skip ci]"
-          git push origin HEAD
+          # Only npm writes a lockfile here; the app itself is on yarn.
+          if [ -f package-lock.json ]; then git add package-lock.json; fi
+          if git diff --cached --quiet; then
+            echo "package.json is already at ${VERSION} - nothing to commit."
+            exit 0
+          fi
+          git commit -m "Bumped version to ${VERSION} [skip ci]"
+          # The image build stamps its own commit on this branch; rebase and
+          # retry instead of failing on a rejected push.
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "Push rejected (attempt ${attempt}); rebasing onto origin/${GITHUB_REF_NAME}"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          done
+          echo "::error::Could not push the package.json bump after 3 attempts"
+          exit 1
