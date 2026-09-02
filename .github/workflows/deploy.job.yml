@@ -25,7 +25,7 @@ on:
         required: true
         type: string
       imageRegistry:
-        description: "Registry to write into the compose file. Callers pass `${{ vars.CR_REGISTRY }}`; deliberately not defaulted, since the host is environment configuration rather than code."
+        description: "Registry to write into the compose file. Callers pass it from the CR_REGISTRY variable; deliberately not defaulted, since the host is environment configuration rather than code."
         required: true
         type: string
       deploymentOwner:
